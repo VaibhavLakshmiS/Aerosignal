@@ -1,0 +1,16 @@
+streamlit
+langchain
+langchain-google-genai
+chromadb
+folium
+streamlit-folium
+yfinance
+pandas
+numpy
+scikit-learn
+requests
+python-dotenv
+plotly
+serpapi
+google-search-results
+sqlalchemy
