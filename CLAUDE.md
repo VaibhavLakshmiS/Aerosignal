@@ -51,5 +51,9 @@ score as the overall route risk score. This is a key differentiator
 vs tools like Hopper that only score destination.
 
 ## Current phase
-Phase 2 in progress — database.py complete.
-Next: fetch_events.py
+Phase 3 in progress — database.py, fetch_events.py, fetch_prices.py, fetch_flights.py,
+rag/embed.py, and rag/signals.py complete and tested.
+- ChromaDB embedding working with gemini-embedding-001
+- Smart great-circle waypoint routing working correctly (slerp interpolation)
+- Data-driven oil relevance scoring working (oil/anomaly only amplify regions with news activity)
+Next: rag/chain.py — the LangChain agent
