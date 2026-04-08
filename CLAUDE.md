@@ -6,10 +6,11 @@ route and the agent analyzes geopolitical news, oil prices, and historical
 patterns to output a risk score and AI summary.
 
 ## Stack
-- Python, LangChain agent with tool-calling
+- Python, LangChain 1.x agent with tool-calling (create_agent, LangGraph-based)
 - ChromaDB for vector storage (embedded news)
 - SQLite via SQLAlchemy for events/prices/risk history
-- Gemini Flash (free tier) as the LLM
+- Groq Llama 3.3 70b Versatile as the LLM (llama-3.3-70b-versatile via langchain-groq)
+- Gemini embedding-001 for ChromaDB embeddings (GEMINI_API_KEY)
 - Serpapi for flight prices
 - GDELT for geopolitical news (free, no key)
 - yfinance for oil prices
@@ -51,9 +52,15 @@ score as the overall route risk score. This is a key differentiator
 vs tools like Hopper that only score destination.
 
 ## Current phase
-Phase 3 in progress — database.py, fetch_events.py, fetch_prices.py, fetch_flights.py,
-rag/embed.py, and rag/signals.py complete and tested.
+Phase 3 complete — full agent pipeline confirmed working end-to-end.
+- rag/chain.py complete and tested: LangChain 1.x create_agent (LangGraph-based)
+- Groq Llama 3.3 70b as LLM — tool-calling and multi-step reasoning confirmed
 - ChromaDB embedding working with gemini-embedding-001
-- Smart great-circle waypoint routing working correctly (slerp interpolation)
+- GDELT news fetching working (429s handled gracefully as empty results)
+- Real oil prices from yfinance working
+- Smart great-circle waypoint routing working (slerp interpolation)
 - Data-driven oil relevance scoring working (oil/anomaly only amplify regions with news activity)
-Next: rag/chain.py — the LangChain agent
+- get_oil_trend tool takes no parameters (Groq schema strictness — int default causes string mismatch)
+- Agent output confirmed: risk score, riskiest region, headlines with dates, oil trend, recommendation
+
+Next: viz/map.py — Folium route map with risk region overlays
