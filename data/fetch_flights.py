@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import logging
 import os
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -22,6 +23,38 @@ from db.database import engine, init_db, insert_data_source, insert_flight
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def get_live_fx_rates() -> dict:
+    """Fetch live FX rates from ECB — free, no key needed."""
+    try:
+        import urllib.request
+        url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            tree = ET.parse(r)
+        root = tree.getroot()
+        ns = "{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}"
+        rates = {"EUR": 1.0}
+        for cube in root.iter(f"{ns}Cube"):
+            if "currency" in cube.attrib:
+                rates[cube.attrib["currency"]] = float(cube.attrib["rate"])
+        # Convert to USD base
+        usd_rate = rates.get("USD", 1.0)
+        return {k: usd_rate / v for k, v in rates.items()}
+    except Exception:
+        # Fallback to fixed rates if ECB is unreachable
+        return {"USD": 1.0, "CAD": 0.73, "GBP": 1.27, "EUR": 1.08}
+
+
+def convert_to_usd(price: float, currency: str, rates: dict = None) -> float:
+    """Convert price to USD using live ECB rates.
+    Falls back to fixed rates if ECB unreachable.
+
+    Pass pre-fetched rates to avoid a redundant HTTP call per flight.
+    """
+    if rates is None:
+        rates = get_live_fx_rates()
+    return round(price * rates.get(currency, 1.0), 2)
 
 
 def fetch_flights(
@@ -68,6 +101,8 @@ def fetch_flights(
         logger.error("SerpApi request failed: %s", e)
         return []
 
+    currency = results.get("search_parameters", {}).get("currency", "USD")
+
     best_flights = results.get("best_flights") or []
     other_flights = results.get("other_flights") or []
     all_flights = best_flights + other_flights
@@ -81,6 +116,7 @@ def fetch_flights(
     except ValueError:
         departure_date = datetime.utcnow().date()
 
+    fx_rates = get_live_fx_rates()
     flights: list[dict] = []
     for result in all_flights:
         legs = result.get("flights") or []
@@ -92,8 +128,9 @@ def fetch_flights(
             "route": route,
             "origin": origin,
             "destination": destination,
-            "price": float(price),
-            "currency": "USD",
+            "price_local": float(price),
+            "price_usd": convert_to_usd(float(price), currency, fx_rates),
+            "currency": currency,
             "departure_date": departure_date,
             "airline": airline,
         })
@@ -146,4 +183,4 @@ if __name__ == "__main__":
     flights = fetch_flights("YYZ", "DXB")
     print(f"Fetched {len(flights)} flights")
     for f in flights[:3]:
-        print(f"{f['airline']}: {f['currency']}{f['price']}")
+        print(f"{f['airline']}: {f['currency']} {f['price_local']} (${f['price_usd']} USD)")

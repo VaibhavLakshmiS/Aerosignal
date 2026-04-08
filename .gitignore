@@ -5,3 +5,4 @@ __pycache__/
 .chromadb/
 chroma_db/
 db/aerosignal.db
+data/airports_cache.csv

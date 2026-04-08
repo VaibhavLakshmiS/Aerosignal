@@ -140,11 +140,11 @@ def check_flight_prices(origin: str, destination: str) -> str:
             "SERPAPI_KEY may not be set or no results returned."
         )
 
-    cheapest = sorted(flights, key=lambda f: f["price"])[:3]
+    cheapest = sorted(flights, key=lambda f: f["price_usd"])[:3]
     lines = [f"Top 3 cheapest flights for {origin}→{destination}:"]
     for i, f in enumerate(cheapest, 1):
         lines.append(
-            f"  {i}. {f['airline']}: ${f['price']:.0f} USD "
+            f"  {i}. {f['airline']}: ${f['price_usd']:.0f} USD "
             f"(departing {f['departure_date']})"
         )
     return "\n".join(lines)
@@ -168,7 +168,11 @@ def analyze_route_risk(origin: str, destination: str) -> str:
     from data.fetch_prices import fetch_oil_prices
     from data.fetch_prices import get_oil_trend as _get_oil_trend
     from db.database import engine, init_db, insert_risk_score
-    from rag.signals import get_waypoints, score_route
+    from rag.signals import (
+        get_waypoints, score_route,
+        forecast_route, get_best_booking_day, get_forecast_summary,
+        detect_cascade_risk,
+    )
 
     # Fetch news only for regions this route actually crosses
     waypoints = get_waypoints(origin, destination)
@@ -180,6 +184,9 @@ def analyze_route_risk(origin: str, destination: str) -> str:
     oil_trend = _get_oil_trend(prices)
 
     result = score_route(origin, destination, all_events, oil_trend, prices)
+    forecast = forecast_route(origin, destination, result, prices)
+    best_day = get_best_booking_day(forecast)
+    forecast_summary = get_forecast_summary(forecast, origin, destination)
 
     # Persist so query_historical can track trends
     init_db()
@@ -208,13 +215,47 @@ def analyze_route_risk(origin: str, destination: str) -> str:
         else "No risk regions crossed"
     )
 
-    return (
+    forecast_lines = "\n".join(
+        f"    {d['date']}  Score: {d['score']:5.1f}  {d['label']:<12}  "
+        f"Oil: {d['oil_change_pct']:+.1f}%  {d['trend']}"
+        for d in forecast
+    )
+
+    peak_day = max(forecast, key=lambda d: d["score"])
+    best_fare_str = (
+        f" — ${best_day['projected_fare']:.0f} USD"
+        if best_day["projected_fare"] else ""
+    )
+
+    output = (
         f"Route risk analysis: {origin} → {destination}\n"
         f"  Overall score:    {result['score']}/100 ({result['label']})\n"
         f"  Riskiest region:  {result['riskiest_region']}\n"
         f"  Airspace crossed: {waypoints_str}\n"
-        f"  Regional breakdown:\n{breakdown_str}"
+        f"  Regional breakdown:\n{breakdown_str}\n\n"
+        f"  7-day forecast:\n{forecast_lines}\n\n"
+        f"  Best booking day: {best_day['date']}{best_fare_str}\n"
+        f"  Peak risk day:    {peak_day['date']} — {peak_day['score']}/100\n"
+        f"  Forecast summary: {forecast_summary}"
     )
+
+    if result.get("has_cascade"):
+        output += "\n\nCASCADE RISK DETECTED:\n"
+        output += (
+            "The following hub airports may see "
+            "secondary demand and fare increases "
+            "due to rerouting:\n"
+        )
+        for c in result["cascade_risks"][:3]:
+            output += (
+                f"- {c['affected_hub_name']} "
+                f"({c['affected_hub']}): "
+                f"demand +{c['demand_increase_pct']}%, "
+                f"fares +{c['fare_impact_pct']}% "
+                f"[{c['confidence']}]\n"
+            )
+
+    return output
 
 
 @tool
