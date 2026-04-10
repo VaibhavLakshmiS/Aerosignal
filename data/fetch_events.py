@@ -4,6 +4,9 @@ data/fetch_events.py — Fetches geopolitical news events from the GDELT Project
 Queries GDELT's free v2 doc API for articles related to a given region,
 parses the response into a standard dict format, and persists results to
 the AeroSignal SQLite database via helpers in db/database.py.
+
+Includes SQLite caching (1-day fresh / 30-day stale fallback) and
+exponential backoff retry to handle GDELT rate limiting gracefully.
 """
 
 import sys
@@ -12,14 +15,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from urllib3.util.retry import Retry
 
-from db.database import Event, insert_data_source, insert_event
+from db.database import (
+    Event, engine, get_recent_events, init_db,
+    insert_data_source, insert_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +36,46 @@ GDELT_BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 _TIMEOUT = 15  # seconds
 
 
+def create_session() -> requests.Session:
+    """
+    Create a requests Session with exponential backoff retry.
+
+    Retries up to 3 times on 429/5xx responses with 2s, 4s, 8s delays.
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    return session
+
+
+def _events_from_cache(cached: list[Event]) -> list[dict]:
+    """Convert ORM Event rows to the standard fetch_events dict format."""
+    return [
+        {
+            "title": e.title,
+            "url": e.url,
+            "region": e.region,
+            "country": e.country,
+            "date": str(e.date),
+            "relevance_score": e.relevance_score,
+            "raw_json": e.raw_json,
+        }
+        for e in cached
+    ]
+
+
 def fetch_events(region: str, days: int = 14) -> list[dict]:
     """
     Fetch geopolitical news articles for a region from GDELT.
+
+    Checks SQLite cache first (1-day window). Only hits GDELT if the cache
+    has fewer than 5 articles. On GDELT failure, falls back to a 30-day
+    stale cache rather than returning empty.
 
     Args:
         region: Airspace region name, e.g. "Gulf", "Eastern Europe".
@@ -39,19 +85,41 @@ def fetch_events(region: str, days: int = 14) -> list[dict]:
     Returns:
         List of dicts with keys: title, url, region, country,
         date, relevance_score, raw_json.
-        Returns an empty list if GDELT is unreachable or returns no articles.
+        Returns an empty list only if GDELT fails and no cache exists.
     """
+    init_db()
+
+    # ── Cache check ───────────────────────────────────────────────────────────
+    with Session(engine) as session:
+        cached = get_recent_events(session, region, days=1)
+        if len(cached) >= 5:
+            logger.info("Cache hit: %d articles for '%s'", len(cached), region)
+            return _events_from_cache(cached)
+
+    # ── GDELT fetch ───────────────────────────────────────────────────────────
+    time.sleep(1)  # rate limit protection between calls
+
     url = (
         f"{GDELT_BASE_URL}?query={region}+conflict"
         f"&mode=artlist&maxrecords=50&format=json&timespan=2w"
     )
+    http = create_session()
 
     try:
-        response = requests.get(url, timeout=_TIMEOUT)
+        response = http.get(url, timeout=_TIMEOUT)
         response.raise_for_status()
         data: dict[str, Any] = response.json()
     except requests.RequestException as e:
         logger.error("GDELT request failed: %s", e)
+        # Stale cache fallback — better than empty
+        with Session(engine) as session:
+            cached = get_recent_events(session, region, days=30)
+            if cached:
+                logger.warning(
+                    "GDELT unavailable — using stale cache (%d articles) for '%s'",
+                    len(cached), region,
+                )
+                return _events_from_cache(cached)
         return []
     except ValueError as e:
         logger.error("GDELT response not valid JSON: %s", e)
@@ -68,7 +136,6 @@ def fetch_events(region: str, days: int = 14) -> list[dict]:
     for article in articles:
         date_str: str = article.get("seendate", "")
         try:
-            # GDELT seendate format: "20260323T064500Z"
             date = datetime.strptime(date_str, "%Y%m%dT%H%M%SZ").date()
         except (ValueError, TypeError):
             date = datetime.utcnow().date()
@@ -85,6 +152,10 @@ def fetch_events(region: str, days: int = 14) -> list[dict]:
             "relevance_score": float(relevance_score),
             "raw_json": json.dumps(article),
         })
+
+    # Persist so the next call within 24 hours hits cache
+    with Session(engine) as session:
+        save_events(events, session)
 
     return events
 

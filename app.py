@@ -8,7 +8,9 @@ travellers and analysts.
 """
 
 import html
+import re
 import sys
+import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -132,6 +134,57 @@ def _recommendation(score: float) -> tuple[str, str]:
         )
 
 
+def _render_agent_response(response: str, score: float) -> None:
+    """Render agent response with highlighted numbers and a styled recommendation box."""
+    sc = _score_color(score)
+
+    def _highlight(text: str) -> str:
+        text = html.escape(text)
+        text = re.sub(
+            r'\$(\d+(?:\.\d+)?)',
+            r'<span style="color:#F5A623;font-weight:600">$\1</span>', text,
+        )
+        text = re.sub(
+            r'(\d+(?:\.\d+)?)\s*%',
+            r'<span style="color:#F5A623;font-weight:600">\1%</span>', text,
+        )
+        text = re.sub(
+            r'(\d+(?:\.\d+)?)\s*/\s*100',
+            rf'<span style="color:{sc};font-weight:600">\1/100</span>', text,
+        )
+        return text
+
+    _REC_KEYWORDS = ("recommend", "book", "avoid", "consider", "verdict",
+                     "conclusion", "summary", "strong")
+
+    paragraphs = [p.strip() for p in re.split(r'\n{2,}', response) if p.strip()]
+    if not paragraphs:
+        paragraphs = [response.strip()]
+
+    for para in paragraphs:
+        first_word = para.split()[0].lower().rstrip(':') if para.split() else ""
+        is_rec = first_word in _REC_KEYWORDS or "recommendation:" in para.lower()
+
+        if is_rec:
+            st.markdown(
+                f'<div style="margin:12px 0;padding:14px 18px;background:{sc}1a;'
+                f'border-left:3px solid {sc};border-radius:6px">'
+                f'<p style="color:#6b7280;font-size:10px;text-transform:uppercase;'
+                f'letter-spacing:0.08em;margin:0 0 6px 0">Recommendation</p>'
+                f'<p style="color:{sc};margin:0;font-size:14px;font-weight:500;'
+                f'line-height:1.65">{_highlight(para)}</p></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div style="background:#080810;border:1px solid #1e1e2e;border-radius:8px;'
+                f'padding:14px 18px;margin:6px 0;font-family:monospace;font-size:13px;'
+                f'color:#d1d5db;line-height:1.75;white-space:pre-wrap;word-wrap:break-word">'
+                f'{_highlight(para)}</div>',
+                unsafe_allow_html=True,
+            )
+
+
 def _card(label: str, value: str, sub: str = "") -> str:
     """Return HTML for a styled metric card."""
     sub_html = (
@@ -196,7 +249,7 @@ if clicked:
         )
 
     else:
-        with st.spinner("Agent analysing route..."):
+        with st.spinner("Loading route data..."):
             try:
                 prices = fetch_oil_prices()
                 trend  = get_oil_trend(prices)
@@ -204,22 +257,30 @@ if clicked:
                 flights      = fetch_flights(origin, destination, travel_date.strftime("%Y-%m-%d"))
                 current_fare = flights[0]["price_usd"] if flights else None
 
-                query = (
-                    f"Analyse the geopolitical risk for flying {origin} to {destination}. "
-                    "Include 7-day forecast and cascade risks."
+                # Fetch events for every waypoint before scoring
+                waypoints = get_waypoints(origin, destination)
+                priority  = ["Gulf", "Eastern Mediterranean", "Pakistan", "India"]
+                sorted_waypoints = (
+                    [r for r in waypoints if r in priority] +
+                    [r for r in waypoints if r not in priority]
                 )
-                agent_response = run_agent(query)
-
-                # Fetch events for meaningful chart scores and sidebar event count
-                waypoints  = get_waypoints(origin, destination)
-                all_events: list[dict] = []
-                for region in waypoints:
+                all_events: list = []
+                for region in sorted_waypoints:
                     try:
-                        all_events.extend(fetch_events(region))
-                    except Exception:
-                        pass
+                        region_evts = fetch_events(region, days=14)
+                        print(f"{region}: {len(region_evts)} events")
+                        all_events.extend(region_evts)
+                        time.sleep(1)
+                    except Exception as e:
+                        print(f"Failed {region}: {e}")
+                print(f"Total events: {len(all_events)}")
+                print(f"Sample regions: {[e.get('region') for e in all_events[:5]]}")
 
                 risk_result = score_route(origin, destination, all_events, trend, prices)
+                print(f"Score: {risk_result['score']}")
+                print(f"Riskiest: {risk_result['riskiest_region']}")
+                print(f"Breakdown: {risk_result['breakdown']}")
+
                 forecast    = forecast_route(origin, destination, risk_result, prices, current_fare)
 
                 map_html = build_map_html(origin, destination, risk_result)
@@ -237,14 +298,16 @@ if clicked:
                     "forecast":       forecast,
                     "trend":          trend,
                     "prices":         prices,
-                    "agent_response": agent_response,
+                    "agent_response": None,
                     "map_html":       map_html,
                     "f_chart":        f_chart,
                     "o_chart":        o_chart,
                     "c_chart":        c_chart,
                     "current_fare":   current_fare,
                     "event_count":    len(all_events),
+                    "events":         all_events,
                 }
+                st.rerun()
 
             except Exception as e:
                 st.warning(
@@ -465,11 +528,86 @@ else:
             )
 
     with tab_ai:
-        safe_response = html.escape(d["agent_response"])
-        st.markdown(
-            f'<div style="background:#080810;border:1px solid #1e1e2e;border-radius:10px;'
-            f'padding:20px 24px;font-family:monospace;font-size:13px;color:#d1d5db;'
-            f'line-height:1.75;white-space:pre-wrap;word-wrap:break-word">'
-            f'{safe_response}</div>',
-            unsafe_allow_html=True,
-        )
+        if d["agent_response"] is None:
+            messages = [
+                "Scanning GDELT for geopolitical signals...",
+                "Analyzing oil market momentum...",
+                "Mapping cascade effects...",
+                "Synthesizing risk assessment...",
+                "Generating booking recommendation...",
+            ]
+            placeholder = st.empty()
+            for msg in messages:
+                placeholder.markdown(
+                    f"<div style='color:#555;font-size:13px;"
+                    f"font-family:monospace'>> {msg}</div>",
+                    unsafe_allow_html=True,
+                )
+                time.sleep(3)
+            placeholder.empty()
+
+            try:
+                query = (
+                    f"Analyse the geopolitical risk for flying {origin} to {destination}. "
+                    "Include 7-day forecast and cascade risks."
+                )
+                agent_response = run_agent(query)
+                if not agent_response:
+                    st.warning("Agent returned an empty response.")
+                    st.stop()
+            except Exception as e:
+                import traceback
+                st.error(f"Agent error: {e}")
+                st.code(traceback.format_exc())
+                st.stop()
+
+            d["agent_response"] = agent_response
+            st.session_state["data"] = d
+            st.rerun()
+
+        else:
+            _render_agent_response(d["agent_response"], score)
+
+        events = d.get("events") or []
+        if events:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(
+                '<p style="color:#6b7280;font-size:11px;margin:0 0 8px 0;'
+                'text-transform:uppercase;letter-spacing:0.07em">News Feed</p>',
+                unsafe_allow_html=True,
+            )
+            for event in sorted(events, key=lambda e: e.get("relevance_score", 0), reverse=True):
+                title    = html.escape(event.get("title", ""))
+                url      = event.get("url", "")
+                date     = str(event.get("date", ""))
+                ev_score = event.get("relevance_score", 0)
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).netloc or url
+                except Exception:
+                    domain = url
+
+                dot_color = (
+                    "#E8593C" if ev_score >= 3
+                    else "#F5A623" if ev_score >= 2
+                    else "#555555"
+                )
+
+                link_html = (
+                    f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
+                    f'style="color:#ffffff;text-decoration:none;font-size:14px;'
+                    f'font-weight:500;line-height:1.4">{title}</a>'
+                    if url else
+                    f'<span style="color:#ffffff;font-size:14px">{title}</span>'
+                )
+
+                st.markdown(
+                    f'<div style="padding:10px 0;border-bottom:1px solid #1e1e2e">'
+                    f'<span style="color:{dot_color};font-size:9px;'
+                    f'vertical-align:middle;margin-right:8px">&#9679;</span>'
+                    f'{link_html}<br>'
+                    f'<span style="color:#6b7280;font-size:12px;margin-left:17px">'
+                    f'{domain}&nbsp;&middot;&nbsp;{date}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )

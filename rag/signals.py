@@ -38,6 +38,19 @@ REGION_BOXES: dict[str, dict] = {
     "Central Asia":           {"lat": (35, 55),  "lng": (55, 80)},
 }
 
+REGION_CENTERS: dict[str, tuple[float, float]] = {
+    "Gulf":                   (26.0,  50.5),
+    "Eastern Europe":         (50.0,  30.0),
+    "Russia":                 (60.0,  60.0),
+    "Eastern Mediterranean":  (36.0,  33.0),
+    "Pakistan":               (30.0,  69.0),
+    "India":                  (22.0,  80.0),
+    "Southeast Asia":         (10.0, 110.0),
+    "East Asia":              (35.0, 125.0),
+    "North Africa":           (25.0,  15.0),
+    "Central Asia":           (45.0,  65.0),
+}
+
 HUB_ALTERNATIVES = {
     "Gulf": {
         "hubs": ["IST", "FRA", "LHR", "DOH"],
@@ -395,6 +408,27 @@ def get_forecast_summary(
     return summary
 
 
+def airport_in_region(iata: str, region: str) -> bool:
+    """
+    Return True if the airport's coordinates fall inside the region's bounding box.
+
+    Uses AIRPORT_COORDS and REGION_BOXES — no hardcoded lists.
+
+    Args:
+        iata:   IATA airport code.
+        region: Region name matching a key in REGION_BOXES.
+    """
+    if iata not in AIRPORT_COORDS:
+        return False
+    lat, lon = AIRPORT_COORDS[iata]
+    box = REGION_BOXES.get(region, {})
+    if not box:
+        return False
+    lat_min, lat_max = box["lat"]
+    lng_min, lng_max = box["lng"]
+    return lat_min <= lat <= lat_max and lng_min <= lon <= lng_max
+
+
 def detect_cascade_risk(
     risk_result: dict,
     origin: str,
@@ -422,6 +456,18 @@ def detect_cascade_risk(
         List of cascade dicts sorted by trigger_score descending.
         Empty list if no region exceeds the threshold.
     """
+    # Debug: confirm DOH exclusion logic is working
+    print(f"DOH in Gulf: {airport_in_region('DOH', 'Gulf')}")
+    print(f"DOH coords: {AIRPORT_COORDS.get('DOH')}")
+    print(f"Gulf box: {REGION_BOXES.get('Gulf')}")
+    for _r, _s in risk_result["breakdown"].items():
+        if _s >= 50 and _r in HUB_ALTERNATIVES:
+            _raw = HUB_ALTERNATIVES[_r]["hubs"]
+            _kept = [h for h in _raw
+                     if h not in [origin, destination]
+                     and not airport_in_region(h, _r)]
+            print(f"CASCADE {_r} ({_s}): {_raw} → kept {_kept}")
+
     cascades = []
 
     for region, score in risk_result["breakdown"].items():
@@ -431,16 +477,36 @@ def detect_cascade_risk(
             continue
 
         hub_data = HUB_ALTERNATIVES[region]
-        # Skip hubs that are origin or destination
-        # — already captured in primary risk score
+        # Skip hubs that are origin/destination or sit inside the
+        # disrupted region itself — they can't serve as safe alternatives
         hubs = [
             h for h in hub_data["hubs"]
             if h not in [origin, destination]
+            and not airport_in_region(h, region)
         ]
 
         for hub in hubs:
             demand_pct = round(score * CASCADE_DEMAND_COEFFICIENT, 1)
-            fare_pct = round(score * CASCADE_FARE_COEFFICIENT, 1)
+            fare_pct   = round(score * CASCADE_FARE_COEFFICIENT, 1)
+
+            # Scale impact by hub's distance from the disrupted region.
+            # Closer hubs absorb more diverted traffic → higher impact.
+            hub_coords    = AIRPORT_COORDS.get(hub)
+            region_center = REGION_CENTERS.get(region)
+            if hub_coords and region_center:
+                dist = haversine_km(
+                    hub_coords[0], hub_coords[1],
+                    region_center[0], region_center[1],
+                )
+                if dist < 1000:
+                    distance_multiplier = 1.5
+                elif dist < 3000:
+                    distance_multiplier = 1.0
+                else:
+                    distance_multiplier = 0.6
+                demand_pct = round(demand_pct * distance_multiplier, 1)
+                fare_pct   = round(fare_pct   * distance_multiplier, 1)
+
             cascades.append({
                 "trigger_region": region,
                 "trigger_score": score,
@@ -457,8 +523,13 @@ def detect_cascade_risk(
                 ),
             })
 
-    cascades.sort(key=lambda x: x["trigger_score"], reverse=True)
-    return cascades
+    # Deduplicate by hub — keep the entry with the highest trigger_score
+    seen_hubs: dict[str, dict] = {}
+    for cascade in cascades:
+        hub = cascade["affected_hub"]
+        if hub not in seen_hubs or cascade["trigger_score"] > seen_hubs[hub]["trigger_score"]:
+            seen_hubs[hub] = cascade
+    return sorted(seen_hubs.values(), key=lambda x: x["trigger_score"], reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -578,9 +649,30 @@ def score_route(
     for region in waypoints:
         breakdown[region] = score_region(region, events, oil_trend, anomaly)
 
-    if breakdown:
-        riskiest_region = max(breakdown, key=lambda r: breakdown[r])
-        top_score = breakdown[riskiest_region]
+    # Apply destination-proximity weighting to pick the riskiest region.
+    # Regions close to the destination are amplified; distant ones are
+    # penalised. This prevents high-volume news regions (e.g. Eastern Europe
+    # during the Ukraine war) from outranking regions that are actually on
+    # the flight path (e.g. Gulf for YYZ→DXB).
+    dest_lat, dest_lng = AIRPORT_COORDS[destination]
+    weighted_breakdown: dict[str, float] = {}
+    for region, raw_score in breakdown.items():
+        center = REGION_CENTERS.get(region)
+        if center:
+            dist = haversine_km(center[0], center[1], dest_lat, dest_lng)
+            if dist < 2000:
+                multiplier = 1.5
+            elif dist < 4000:
+                multiplier = 1.2
+            else:
+                multiplier = 0.8
+        else:
+            multiplier = 1.0
+        weighted_breakdown[region] = round(raw_score * multiplier, 1)
+
+    if weighted_breakdown:
+        riskiest_region = max(weighted_breakdown, key=lambda r: weighted_breakdown[r])
+        top_score = breakdown[riskiest_region]   # report raw score, not inflated
     else:
         riskiest_region = "Unknown"
         top_score = 0.0
@@ -591,6 +683,7 @@ def score_route(
         "riskiest_region": riskiest_region,
         "waypoints": waypoints,
         "breakdown": breakdown,
+        "weighted_breakdown": weighted_breakdown,
         "label": label_from_score(top_score),
     }
     cascades = detect_cascade_risk(result, origin, destination)
