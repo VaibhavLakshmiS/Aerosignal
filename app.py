@@ -325,12 +325,13 @@ if "data" not in st.session_state:
     <div style="text-align:center;padding:60px 20px 48px 20px">
         <h1 style="font-size:48px;font-weight:700;color:#ffffff;
                    margin:0;line-height:1.15">
-            Should you book<br>this flight today?
+            Is this route<br>risky right now?
         </h1>
         <p style="color:#6b7280;font-size:18px;margin:24px auto 0 auto;
-                  max-width:520px;line-height:1.65">
-            AeroSignal analyses geopolitical events, oil markets and airspace
-            risk to tell you the optimal time to book.
+                  max-width:560px;line-height:1.65">
+            AeroSignal analyzes geopolitical events, oil markets and airspace
+            corridors to assess flight route risk — giving you intelligence
+            before you book.
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -338,19 +339,19 @@ if "data" not in st.session_state:
     c1, c2, c3 = st.columns(3)
     feature_cards = [
         (
-            "7-Day Forecast",
-            "Risk timeline with projected fare movement, oil momentum, "
-            "and best booking day — updated on every analysis.",
+            "Route Risk Score",
+            "Scores your route 0-100 based on live news, oil prices and "
+            "airspace data across the full flight corridor.",
         ),
         (
             "Cascade Detection",
-            "Second-order hub impacts. When Gulf airspace is disrupted, "
-            "Istanbul and Frankfurt fares spike. We surface that.",
+            "Detects second-order hub airport impacts when primary routes "
+            "are disrupted by geopolitical events.",
         ),
         (
-            "AI Agent",
-            "Live Groq Llama 3.3 reasoning with GDELT news, Brent crude "
-            "data, and historical route scores.",
+            "7-Day Outlook",
+            "Projects how risk and estimated fares may change over the next "
+            "week based on oil momentum and news cycle.",
         ),
     ]
     for col, (title, desc) in zip([c1, c2, c3], feature_cards):
@@ -409,6 +410,20 @@ else:
         unsafe_allow_html=True,
     )
 
+    st.markdown("""
+<div style='font-size:11px;color:#444;padding:8px 4px;line-height:1.6'>
+    Risk scores are model-derived estimates based on news volume, oil price momentum,
+    and historical event patterns. Not financial or travel advice. Always check official
+    airline and government travel advisories before booking.
+</div>
+""", unsafe_allow_html=True)
+
+    google_flights_url = (
+        f"https://www.google.com/travel/flights"
+        f"?q=flights+from+{origin}+to+{destination}"
+    )
+    st.link_button("Search flights on Google Flights →", google_flights_url)
+
     # Four metric columns
     mc1, mc2, mc3, mc4 = st.columns(4)
     best_fare_str = f"${best_day['projected_fare']:.0f}" if best_day["projected_fare"] else "—"
@@ -440,9 +455,9 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Tabs
-    tab_globe, tab_forecast, tab_oil, tab_cascade, tab_ai = st.tabs([
+    tab_globe, tab_forecast, tab_oil, tab_cascade, tab_ai, tab_backtest = st.tabs([
         "  Globe  ", "  7-Day Forecast  ", "  Oil Market  ",
-        "  Cascade Risk  ", "  AI Analysis  ",
+        "  Cascade Risk  ", "  AI Analysis  ", "  Backtest  ",
     ])
 
     with tab_globe:
@@ -611,3 +626,73 @@ else:
                     f'</div>',
                     unsafe_allow_html=True,
                 )
+
+    with tab_backtest:
+        st.markdown("""
+<div style='font-size:13px;color:#888;margin-bottom:16px;line-height:1.7'>
+    AeroSignal's risk model is validated against 3 known historical geopolitical
+    events. For each event, we test whether the model correctly flags elevated risk
+    using only data available BEFORE the event peaked — simulating real-world
+    early warning capability.
+</div>
+""", unsafe_allow_html=True)
+
+        with st.spinner("Running backtest..."):
+            from rag.signals import validate_model
+            backtest_results = validate_model()
+
+        correct  = sum(1 for r in backtest_results if r["correctly_flagged"])
+        total    = len(backtest_results)
+        accuracy = round(correct / total * 100) if total else 0
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Events correctly flagged", f"{correct}/{total}")
+        with col2:
+            st.metric("Directional accuracy", f"{accuracy}%")
+        with col3:
+            st.metric("Events tested", total)
+
+        st.divider()
+
+        for r in backtest_results:
+            flagged_color = "#00C897" if r["correctly_flagged"] else "#E8593C"
+            flagged_text  = "Correctly flagged" if r["correctly_flagged"] else "Missed"
+            oil_text      = (
+                f"{r['actual_oil_change_pct']:+.1f}%"
+                if r["actual_oil_change_pct"] is not None else "N/A"
+            )
+            st.markdown(f"""
+<div style='background:#0f0f1a;border:1px solid #1e1e2e;border-radius:8px;
+    padding:14px 18px;margin-bottom:10px'>
+    <div style='display:flex;justify-content:space-between;align-items:center;
+        flex-wrap:wrap;gap:8px'>
+        <div>
+            <div style='font-size:14px;font-weight:500;color:#fff'>{r["event"]}</div>
+            <div style='font-size:11px;color:#555;margin-top:2px'>
+                {r["date"]} &middot; {r["route"]} &middot; {r["region"]}
+            </div>
+        </div>
+        <div style='text-align:right'>
+            <div style='font-size:20px;font-weight:500;color:#F5A623'>
+                {r["pre_event_score"]}/100
+            </div>
+            <div style='font-size:11px;color:{flagged_color}'>{flagged_text}</div>
+        </div>
+    </div>
+    <div style='margin-top:10px;font-size:12px;color:#666'>
+        Oil price {oil_text} in 14 days after event &middot;
+        Pre-event oil: ${r["oil_at_event"]}/bbl
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+        st.markdown("""
+<div style='font-size:11px;color:#444;margin-top:12px;line-height:1.6'>
+    Backtest methodology: Pre-event scores calculated using oil price data from
+    30 days before each event with 3 simulated early warning news signals.
+    Scores &ge;30 considered "correctly flagged." Actual oil changes measured
+    14 days post-event. This is directional validation only — not a guarantee
+    of future accuracy.
+</div>
+""", unsafe_allow_html=True)

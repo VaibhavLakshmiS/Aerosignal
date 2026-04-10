@@ -692,6 +692,116 @@ def score_route(
     return result
 
 
+HISTORICAL_EVENTS = [
+    {
+        "name": "Ukraine invasion",
+        "date": "2022-02-24",
+        "route": ("LHR", "KBP"),
+        "region": "Eastern Europe",
+        "expected_direction": "high",
+    },
+    {
+        "name": "Iran attacks Israel",
+        "date": "2024-10-01",
+        "route": ("LHR", "TLV"),
+        "region": "Eastern Mediterranean",
+        "expected_direction": "high",
+    },
+    {
+        "name": "Gaza conflict start",
+        "date": "2023-10-07",
+        "route": ("LHR", "TLV"),
+        "region": "Eastern Mediterranean",
+        "expected_direction": "high",
+    },
+]
+
+
+def validate_model() -> list[dict]:
+    """
+    Backtest the risk model against known historical geopolitical events.
+
+    For each event in HISTORICAL_EVENTS:
+    1. Fetch oil prices for the 30 days before the event via yfinance.
+    2. Calculate the oil trend and anomaly at that point in time.
+    3. Run score_region with 3 simulated early-warning news signals.
+    4. Check whether the model correctly flags elevated risk (score >= 30).
+    5. Fetch oil prices for 14 days after the event and record actual change.
+
+    Returns:
+        List of result dicts with keys: event, date, route, region,
+        pre_event_score, correctly_flagged, actual_oil_change_pct, oil_at_event.
+    """
+    import yfinance as yf
+    from datetime import datetime, timedelta
+    from data.fetch_prices import get_oil_trend
+
+    results: list[dict] = []
+
+    for event in HISTORICAL_EVENTS:
+        event_date = datetime.strptime(event["date"], "%Y-%m-%d")
+
+        start = event_date - timedelta(days=35)
+        end   = event_date - timedelta(days=1)
+
+        ticker = yf.Ticker("CL=F")
+        hist   = ticker.history(
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+        )
+
+        if len(hist) < 5:
+            continue
+
+        prices = [
+            {
+                "date":   str(idx.date()),
+                "close":  round(float(row["Close"]), 2),
+                "open":   round(float(row["Open"]),  2),
+                "high":   round(float(row["High"]),  2),
+                "low":    round(float(row["Low"]),   2),
+                "volume": float(row["Volume"]),
+            }
+            for idx, row in hist.iterrows()
+        ]
+
+        trend   = get_oil_trend(prices)
+        anomaly = detect_anomaly(prices)
+
+        simulated_events = [
+            {"region": event["region"], "title": f"{event['name']} early warning"}
+        ] * 3
+
+        pre_score = score_region(event["region"], simulated_events, trend, anomaly)
+
+        after_hist = ticker.history(
+            start=event_date.strftime("%Y-%m-%d"),
+            end=(event_date + timedelta(days=14)).strftime("%Y-%m-%d"),
+        )
+
+        if len(after_hist) >= 2:
+            price_before       = float(hist["Close"].iloc[-1])
+            price_after        = float(after_hist["Close"].iloc[-1])
+            actual_oil_change  = round(
+                (price_after - price_before) / price_before * 100, 1
+            )
+        else:
+            actual_oil_change = None
+
+        results.append({
+            "event":                event["name"],
+            "date":                 event["date"],
+            "route":                f"{event['route'][0]}-{event['route'][1]}",
+            "region":               event["region"],
+            "pre_event_score":      round(pre_score, 1),
+            "correctly_flagged":    pre_score >= 30,
+            "actual_oil_change_pct": actual_oil_change,
+            "oil_at_event":         round(float(hist["Close"].iloc[-1]), 2),
+        })
+
+    return results
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     from data.fetch_prices import fetch_oil_prices, get_oil_trend
@@ -729,3 +839,17 @@ if __name__ == "__main__":
             f"fares +{c['fare_impact_pct']}% "
             f"-- {c['severity']}"
         )
+
+    print("\n--- Backtest ---")
+    results = validate_model()
+    print(f"{'Event':<25} {'Score':<8} {'Flagged':<18} {'Oil Δ after'}")
+    print("-" * 60)
+    for r in results:
+        flagged = "✓ Yes" if r["correctly_flagged"] else "✗ No"
+        oil     = (
+            f"{r['actual_oil_change_pct']:+.1f}%"
+            if r["actual_oil_change_pct"] is not None else "N/A"
+        )
+        print(f"{r['event']:<25} {r['pre_event_score']:<8} {flagged:<18} {oil}")
+    correct = sum(1 for r in results if r["correctly_flagged"])
+    print(f"\nAccuracy: {correct}/{len(results)} events correctly flagged")
