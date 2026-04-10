@@ -30,37 +30,49 @@ patterns to output a risk score and AI summary.
 - Add a short docstring at the top of every file explaining what it does
 - Use type hints on all functions
 
-## Key design decisions
+## Key design decisions (do not change)
+- Great circle routing via spherical interpolation
+- OurAirports CSV for airport coordinates (3500+)
+- Data-driven oil relevance (not hardcoded regions)
+- Cascade detection via geographic bounding boxes
+- OR IGNORE deduplication on all SQLite inserts
+- Two-stage loading in app.py (fast data first, agent second)
+- Groq Llama 3.1 70B as LLM
+- HuggingFace all-MiniLM-L6-v2 for embeddings (local)
+- IATA fuel cost methodology for fare projections
+- ECB live FX rates with fixed rate fallback
 
-### Route risk scoring uses full flight path, not just destination
-A route like Dallas → Mumbai routed via Gulf inherits Gulf airspace
-risk even though neither endpoint is in the Gulf.
+## Current status
+Project is feature complete and ready to deploy.
 
-In signals.py, implement a ROUTE_WAYPOINTS dictionary mapping
-(origin_iata, destination_iata) tuples to a list of airspace
-regions the flight passes through. Example:
+## Completed files
+- db/database.py ✓
+- data/airports.py ✓
+- data/fetch_events.py ✓
+- data/fetch_prices.py ✓
+- data/fetch_flights.py ✓
+- rag/embed.py ✓
+- rag/signals.py ✓ (includes forecast, cascade, backtest)
+- rag/chain.py ✓
+- viz/map.py ✓ (Plotly 3D globe)
+- viz/charts.py ✓
+- app.py ✓ (full dashboard)
+- .streamlit/config.toml ✓
 
-ROUTE_WAYPOINTS = {
-    ("YYZ", "DXB"): ["Gulf", "Eastern Europe", "Central Asia"],
-    ("YYZ", "BOM"): ["Gulf", "Pakistan", "India"],
-    ("LHR", "TLV"): ["Eastern Mediterranean"],
-    ("JFK", "BOM"): ["Gulf", "Pakistan", "India"],
-}
+## Remaining tasks
+- README.md (not written yet)
+- Deploy to Streamlit Cloud
+- Add live URL to README
+- Update resume
 
-Score every region in the waypoints list and return the highest
-score as the overall route risk score. This is a key differentiator
-vs tools like Hopper that only score destination.
+## Known issues to fix post-deploy
+- GDELT rate limiting (caching helps but not perfect)
+- Eastern Europe occasionally scores higher than Gulf due to Ukraine war news volume
 
-## Current phase
-Phase 3 complete — full agent pipeline confirmed working end-to-end.
-- rag/chain.py complete and tested: LangChain 1.x create_agent (LangGraph-based)
-- Groq Llama 3.3 70b as LLM — tool-calling and multi-step reasoning confirmed
-- ChromaDB embedding working with gemini-embedding-001
-- GDELT news fetching working (429s handled gracefully as empty results)
-- Real oil prices from yfinance working
-- Smart great-circle waypoint routing working (slerp interpolation)
-- Data-driven oil relevance scoring working (oil/anomaly only amplify regions with news activity)
-- get_oil_trend tool takes no parameters (Groq schema strictness — int default causes string mismatch)
-- Agent output confirmed: risk score, riskiest region, headlines with dates, oil trend, recommendation
-
-Next: viz/map.py — Folium route map with risk region overlays
+## APIs in use
+- Groq API (LLM) — GROQ_API_KEY
+- Serpapi (flights) — SERPAPI_KEY
+- GDELT (news) — no key needed
+- yfinance (oil) — no key needed
+- OurAirports CSV — no key needed
+- ECB FX rates — no key needed
