@@ -1,13 +1,10 @@
 """
 rag/embed.py — Embeds geopolitical news articles into ChromaDB for semantic search.
 
-Uses GoogleGenerativeAIEmbeddings (Gemini embedding-001) to vectorise article
-titles and stores them in a local ChromaDB collection called "news_events".
-Provides embed_events() for ingestion and search_events() for retrieval.
+Uses ChromaDB's built-in DefaultEmbeddingFunction (ONNX-based, no torch dependency)
+to vectorise article titles and stores them in a local ChromaDB collection called
+"news_events". Provides embed_events() for ingestion and search_events() for retrieval.
 """
-
-import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import sys
 from pathlib import Path
@@ -16,33 +13,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import logging
 
 import chromadb
-from dotenv import load_dotenv
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from chromadb.utils import embedding_functions
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 _COLLECTION_NAME = "news_events"
 _CHROMA_DIR = str(Path(__file__).parent.parent / "chroma_db")
 
 
-def _get_embedding_fn() -> GoogleGenerativeAIEmbeddings:
-    """Return a Gemini embedding function, raising clearly if key is missing."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise EnvironmentError(
-            "GEMINI_API_KEY not set — add it to your .env file."
-        )
-    return GoogleGenerativeAIEmbeddings(
-        model="models/gemini-embedding-001",
-        google_api_key=api_key,
-    )
-
-
 def _get_collection() -> chromadb.Collection:
     """Return (or create) the persistent ChromaDB news_events collection."""
+    ef = embedding_functions.DefaultEmbeddingFunction()
     client = chromadb.PersistentClient(path=_CHROMA_DIR)
-    return client.get_or_create_collection(_COLLECTION_NAME)
+    return client.get_or_create_collection(_COLLECTION_NAME, embedding_function=ef)
 
 
 def embed_events(events: list[dict]) -> int:
@@ -60,12 +43,6 @@ def embed_events(events: list[dict]) -> int:
         Number of documents added or updated.
     """
     if not events:
-        return 0
-
-    try:
-        embedding_fn = _get_embedding_fn()
-    except EnvironmentError as e:
-        logger.warning(str(e))
         return 0
 
     collection = _get_collection()
@@ -91,14 +68,7 @@ def embed_events(events: list[dict]) -> int:
     if not ids:
         return 0
 
-    embeddings = embedding_fn.embed_documents(documents)
-
-    collection.upsert(
-        ids=ids,
-        embeddings=embeddings,
-        documents=documents,
-        metadatas=metadatas,
-    )
+    collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
 
     logger.info("Upserted %d documents into ChromaDB collection '%s'", len(ids), _COLLECTION_NAME)
     return len(ids)
@@ -114,24 +84,16 @@ def search_events(query: str, n_results: int = 5) -> list[dict]:
 
     Returns:
         List of dicts with keys: title, url, region, date.
-        Returns an empty list if the collection is empty or the key is missing.
+        Returns an empty list if the collection is empty.
     """
-    try:
-        embedding_fn = _get_embedding_fn()
-    except EnvironmentError as e:
-        logger.warning(str(e))
-        return []
-
     collection = _get_collection()
 
     if collection.count() == 0:
         logger.info("ChromaDB collection '%s' is empty — run embed_events first.", _COLLECTION_NAME)
         return []
 
-    query_embedding = embedding_fn.embed_query(query)
-
     results = collection.query(
-        query_embeddings=[query_embedding],
+        query_texts=[query],
         n_results=min(n_results, collection.count()),
         include=["documents", "metadatas"],
     )
