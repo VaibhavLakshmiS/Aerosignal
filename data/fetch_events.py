@@ -97,7 +97,7 @@ def fetch_events(region: str, days: int = 14) -> list[dict]:
             return _events_from_cache(cached)
 
     # ── GDELT fetch ───────────────────────────────────────────────────────────
-    time.sleep(1)  # rate limit protection between calls
+    time.sleep(3)  # rate limit protection between calls
 
     url = (
         f"{GDELT_BASE_URL}?query={region}+conflict"
@@ -105,13 +105,26 @@ def fetch_events(region: str, days: int = 14) -> list[dict]:
     )
     http = create_session()
 
-    try:
-        response = http.get(url, timeout=_TIMEOUT)
-        response.raise_for_status()
-        data: dict[str, Any] = response.json()
-    except requests.RequestException as e:
-        logger.error("GDELT request failed: %s", e)
-        # Stale cache fallback — better than empty
+    data: dict[str, Any] = {}
+    for attempt in range(3):
+        try:
+            response = http.get(url, timeout=_TIMEOUT)
+            if response.status_code == 429:
+                wait = 10 * (attempt + 1)
+                logger.warning(
+                    "GDELT 429 — waiting %ds (attempt %d/3)", wait, attempt + 1
+                )
+                time.sleep(wait)
+                continue
+            response.raise_for_status()
+            data = response.json()
+            break
+        except (requests.RequestException, ValueError) as e:
+            logger.error("GDELT attempt %d failed: %s", attempt + 1, e)
+            time.sleep(5)
+            continue
+    else:
+        # All 3 attempts failed — stale cache fallback
         with Session(engine) as session:
             cached = get_recent_events(session, region, days=30)
             if cached:
@@ -120,9 +133,6 @@ def fetch_events(region: str, days: int = 14) -> list[dict]:
                     len(cached), region,
                 )
                 return _events_from_cache(cached)
-        return []
-    except ValueError as e:
-        logger.error("GDELT response not valid JSON: %s", e)
         return []
 
     articles = data.get("articles") or []

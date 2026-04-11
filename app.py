@@ -101,6 +101,12 @@ from viz.charts import cascade_chart, forecast_chart, oil_chart
 from viz.map import build_map_html, get_risk_color
 
 
+@st.cache_data(ttl=60)
+def get_cached_events(region: str) -> list:
+    """Fetch events with a 60s Streamlit cache to limit GDELT hammering."""
+    return fetch_events(region, days=14)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _score_color(score: float) -> str:
@@ -297,7 +303,7 @@ if clicked:
                 all_events: list = []
                 for region in sorted_waypoints:
                     try:
-                        region_evts = fetch_events(region, days=14)
+                        region_evts = get_cached_events(region)
                         print(f"{region}: {len(region_evts)} events")
                         all_events.extend(region_evts)
                         time.sleep(1)
@@ -305,6 +311,13 @@ if clicked:
                         print(f"Failed {region}: {e}")
                 print(f"Total events: {len(all_events)}")
                 print(f"Sample regions: {[e.get('region') for e in all_events[:5]]}")
+
+                gdelt_note = None
+                if len(all_events) == 0:
+                    gdelt_note = (
+                        "Live news feed temporarily unavailable (GDELT rate limit). "
+                        "Risk score based on oil data only. Try again in 60 seconds."
+                    )
 
                 risk_result = score_route(origin, destination, all_events, trend, prices)
                 print(f"Score: {risk_result['score']}")
@@ -335,6 +348,7 @@ if clicked:
                     "c_chart":        c_chart,
                     "current_fare":   current_fare,
                     "fare_note":      fare_note,
+                    "gdelt_note":     gdelt_note,
                     "event_count":    len(all_events),
                     "events":         all_events,
                 }
@@ -462,6 +476,8 @@ else:
             "Live fare data unavailable for this route. "
             "Risk analysis is still accurate — fare projections require Serpapi data."
         )
+    if d.get("gdelt_note"):
+        st.info(d["gdelt_note"])
 
     # Four metric columns
     mc1, mc2, mc3, mc4 = st.columns(4)
