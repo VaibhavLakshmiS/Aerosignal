@@ -232,10 +232,9 @@ with st.sidebar:
         _rr   = _d["risk_result"]
         _tr   = _d["trend"]
         _sign = "+" if _tr["price_change_pct"] >= 0 else ""
-        st.metric("Risk Score",  f"{_rr['score']:.0f}/100")
-        st.metric("Oil Price",   f"${_tr['current_price']:.2f}/bbl")
-        st.metric("30d Trend",   f"{_sign}{_tr['price_change_pct']:.1f}%")
-        st.metric("News Events", str(_d["event_count"]))
+        st.metric("Risk Score", f"{_rr['score']:.0f}/100")
+        st.metric("Oil Price",  f"${_tr['current_price']:.2f}/bbl")
+        st.metric("30d Trend",  f"{_sign}{_tr['price_change_pct']:.1f}%")
 
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
@@ -280,9 +279,18 @@ if clicked:
             try:
                 prices = fetch_oil_prices()
                 trend  = get_oil_trend(prices)
+            except Exception:
+                prices = []
+                trend  = {
+                    "current_price": 0.0, "price_change_pct": 0.0,
+                    "is_rising": False, "prices": [],
+                }
 
-                flights   = fetch_flights(origin, destination, travel_date.strftime("%Y-%m-%d"))
-                fare_note = None
+            flights      = []
+            fare_note    = None
+            current_fare = None
+            try:
+                flights = fetch_flights(origin, destination, travel_date.strftime("%Y-%m-%d"))
                 if not flights and origin in AIRPORT_FALLBACKS:
                     fallback = AIRPORT_FALLBACKS[origin]
                     flights  = fetch_flights(fallback, destination, travel_date.strftime("%Y-%m-%d"))
@@ -292,72 +300,56 @@ if clicked:
                             f"Showing fares from {fallback} as reference."
                         )
                 current_fare = flights[0]["price_usd"] if flights else None
+            except Exception:
+                pass
 
-                # Fetch events for every waypoint before scoring
-                waypoints = get_waypoints(origin, destination)
-                priority  = ["Gulf", "Eastern Mediterranean", "Pakistan", "India"]
-                sorted_waypoints = (
-                    [r for r in waypoints if r in priority] +
-                    [r for r in waypoints if r not in priority]
-                )
-                all_events: list = []
-                for region in sorted_waypoints:
-                    try:
-                        region_evts = get_cached_events(region)
-                        print(f"{region}: {len(region_evts)} events")
-                        all_events.extend(region_evts)
-                        time.sleep(1)
-                    except Exception as e:
-                        print(f"Failed {region}: {e}")
-                print(f"Total events: {len(all_events)}")
-                print(f"Sample regions: {[e.get('region') for e in all_events[:5]]}")
-
-                gdelt_note = None
-                if len(all_events) == 0:
-                    gdelt_note = (
-                        "Live news feed temporarily unavailable (GDELT rate limit). "
-                        "Risk score based on oil data only. Try again in 60 seconds."
-                    )
-
-                risk_result = score_route(origin, destination, all_events, trend, prices)
-                print(f"Score: {risk_result['score']}")
-                print(f"Riskiest: {risk_result['riskiest_region']}")
-                print(f"Breakdown: {risk_result['breakdown']}")
-
-                forecast    = forecast_route(origin, destination, risk_result, prices, current_fare)
-
-                map_html = build_map_html(origin, destination, risk_result)
-                f_chart  = forecast_chart(forecast)
-                o_chart  = oil_chart(prices)
-                c_chart  = (
-                    cascade_chart(risk_result["cascade_risks"])
-                    if risk_result["has_cascade"] else None
-                )
-
-                st.session_state["data"] = {
-                    "origin":         origin,
-                    "destination":    destination,
-                    "risk_result":    risk_result,
-                    "forecast":       forecast,
-                    "trend":          trend,
-                    "prices":         prices,
-                    "agent_response": None,
-                    "map_html":       map_html,
-                    "f_chart":        f_chart,
-                    "o_chart":        o_chart,
-                    "c_chart":        c_chart,
-                    "current_fare":   current_fare,
-                    "fare_note":      fare_note,
-                    "gdelt_note":     gdelt_note,
-                    "event_count":    len(all_events),
-                    "events":         all_events,
-                }
-                st.rerun()
-
+            try:
+                risk_result = score_route(origin, destination, [], trend, prices)
             except Exception as e:
-                st.warning(
-                    f"Analysis partially complete — some data may be unavailable. {e}"
-                )
+                st.error(f"Risk scoring failed: {e}")
+                st.stop()
+
+            try:
+                forecast = forecast_route(origin, destination, risk_result, prices, current_fare)
+            except Exception:
+                forecast = []
+
+            try:
+                map_html = build_map_html(origin, destination, risk_result)
+            except Exception:
+                map_html = "<p style='color:#555;padding:20px'>Map unavailable</p>"
+
+            f_chart = c_chart = o_chart = None
+            try:
+                f_chart = forecast_chart(forecast) if forecast else None
+            except Exception:
+                pass
+            try:
+                o_chart = oil_chart(prices) if prices else None
+            except Exception:
+                pass
+            try:
+                c_chart = cascade_chart(risk_result["cascade_risks"]) if risk_result.get("has_cascade") else None
+            except Exception:
+                pass
+
+            st.session_state["data"] = {
+                "origin":         origin,
+                "destination":    destination,
+                "risk_result":    risk_result,
+                "forecast":       forecast,
+                "trend":          trend,
+                "prices":         prices,
+                "agent_response": None,
+                "events":         None,
+                "map_html":       map_html,
+                "f_chart":        f_chart,
+                "o_chart":        o_chart,
+                "c_chart":        c_chart,
+                "current_fare":   current_fare,
+                "fare_note":      fare_note,
+            }
+            st.rerun()
 
 
 # ── Main area ─────────────────────────────────────────────────────────────────
@@ -476,8 +468,6 @@ else:
             "Live fare data unavailable for this route. "
             "Risk analysis is still accurate — fare projections require Serpapi data."
         )
-    if d.get("gdelt_note"):
-        st.info(d["gdelt_note"])
 
     # Four metric columns
     mc1, mc2, mc3, mc4 = st.columns(4)
@@ -599,43 +589,39 @@ else:
 
     with tab_ai:
         if d["agent_response"] is None:
-            messages = [
-                "Scanning GDELT for geopolitical signals...",
-                "Analyzing oil market momentum...",
-                "Mapping cascade effects...",
-                "Synthesizing risk assessment...",
-                "Generating booking recommendation...",
-            ]
-            placeholder = st.empty()
-            for msg in messages:
-                placeholder.markdown(
-                    f"<div style='color:#555;font-size:13px;"
-                    f"font-family:monospace'>> {msg}</div>",
-                    unsafe_allow_html=True,
-                )
-                time.sleep(3)
-            placeholder.empty()
+            # Fetch events for top-2 waypoints only (fast, cached)
+            if d["events"] is None:
+                waypoints = get_waypoints(origin, destination)
+                ai_events: list = []
+                for region in waypoints[:2]:
+                    try:
+                        ai_events.extend(get_cached_events(region))
+                        time.sleep(1)
+                    except Exception:
+                        pass
+                d["events"] = ai_events
+                st.session_state["data"] = d
 
-            try:
-                query = (
-                    f"Analyse the geopolitical risk for flying {origin} to {destination}. "
-                    "Include 7-day forecast and cascade risks."
-                )
-                agent_response = run_agent(query)
-                if not agent_response:
-                    st.warning("Agent returned an empty response.")
-                    st.stop()
-            except Exception as e:
-                import traceback
-                st.error(f"Agent error: {e}")
-                st.code(traceback.format_exc())
-                st.stop()
+            agent_response = None
+            with st.spinner("Agent analyzing route..."):
+                try:
+                    query = (
+                        f"Analyse the geopolitical risk for flying {origin} to {destination}. "
+                        "Include 7-day forecast and cascade risks."
+                    )
+                    agent_response = run_agent(query)
+                except Exception:
+                    st.warning(
+                        "AI Analysis temporarily unavailable. "
+                        "All other tabs are fully functional."
+                    )
 
-            d["agent_response"] = agent_response
+            d["agent_response"] = agent_response or ""
             st.session_state["data"] = d
-            st.rerun()
+            if agent_response:
+                st.rerun()
 
-        else:
+        elif d["agent_response"]:
             _render_agent_response(d["agent_response"], score)
 
         events = d.get("events") or []
