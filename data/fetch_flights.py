@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
-from serpapi import GoogleSearch
+from serpapi import Client as SerpapiClient
 from sqlalchemy.orm import Session
 
 from db.database import engine, init_db, insert_data_source, insert_flight
@@ -94,16 +94,15 @@ def fetch_flights(
     route = f"{origin}-{destination}"
 
     try:
-        search = GoogleSearch({
+        client = SerpapiClient(api_key=api_key)
+        results = client.search({
             "engine": "google_flights",
             "departure_id": origin,
             "arrival_id": destination,
             "outbound_date": date,
             "currency": "USD",
             "type": "2",          # 2 = one-way
-            "api_key": api_key,
         })
-        results = search.get_dict()
     except Exception as e:
         logger.error("SerpApi request failed: %s", e)
         return []
