@@ -6,12 +6,14 @@ titles and stores them in a local ChromaDB collection called "news_events".
 Provides embed_events() for ingestion and search_events() for retrieval.
 """
 
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import logging
-import os
 
 import chromadb
 from dotenv import load_dotenv
