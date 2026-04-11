@@ -90,7 +90,7 @@ header    {visibility: hidden;}
 
 # ── Imports after CSS (avoids import-time flicker on slow machines) ───────────
 from data.fetch_events import fetch_events
-from data.fetch_flights import fetch_flights
+from data.fetch_flights import fetch_flights, AIRPORT_FALLBACKS
 from data.fetch_prices import fetch_oil_prices, get_oil_trend
 from rag.chain import run_agent
 from rag.signals import (
@@ -254,7 +254,16 @@ if clicked:
                 prices = fetch_oil_prices()
                 trend  = get_oil_trend(prices)
 
-                flights      = fetch_flights(origin, destination, travel_date.strftime("%Y-%m-%d"))
+                flights   = fetch_flights(origin, destination, travel_date.strftime("%Y-%m-%d"))
+                fare_note = None
+                if not flights and origin in AIRPORT_FALLBACKS:
+                    fallback = AIRPORT_FALLBACKS[origin]
+                    flights  = fetch_flights(fallback, destination, travel_date.strftime("%Y-%m-%d"))
+                    if flights:
+                        fare_note = (
+                            f"No direct fares found for {origin}. "
+                            f"Showing fares from {fallback} as reference."
+                        )
                 current_fare = flights[0]["price_usd"] if flights else None
 
                 # Fetch events for every waypoint before scoring
@@ -304,6 +313,7 @@ if clicked:
                     "o_chart":        o_chart,
                     "c_chart":        c_chart,
                     "current_fare":   current_fare,
+                    "fare_note":      fare_note,
                     "event_count":    len(all_events),
                     "events":         all_events,
                 }
@@ -424,6 +434,14 @@ else:
     )
     st.link_button("Search flights on Google Flights →", google_flights_url)
 
+    if d.get("fare_note"):
+        st.warning(d["fare_note"])
+    if not d["current_fare"]:
+        st.info(
+            "Live fare data unavailable for this route. "
+            "Risk analysis is still accurate — fare projections require Serpapi data."
+        )
+
     # Four metric columns
     mc1, mc2, mc3, mc4 = st.columns(4)
     best_fare_str = f"${best_day['projected_fare']:.0f}" if best_day["projected_fare"] else "—"
@@ -432,7 +450,7 @@ else:
         diff       = best_day["projected_fare"] - d["current_fare"]
         impact_str = f"+${diff:.0f}" if diff >= 0 else f"-${abs(diff):.0f}"
     else:
-        impact_str = "N/A"
+        impact_str = "Unavailable"
 
     oil_sign = "+" if trend["price_change_pct"] >= 0 else ""
 

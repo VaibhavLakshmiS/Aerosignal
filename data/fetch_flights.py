@@ -24,6 +24,13 @@ from db.database import engine, init_db, insert_data_source, insert_flight
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+AIRPORT_FALLBACKS: dict[str, str] = {
+    "MAA": "BOM",  # Chennai → Mumbai
+    "CCU": "DEL",  # Kolkata → Delhi
+    "HYD": "BOM",  # Hyderabad → Mumbai
+    "COK": "BOM",  # Kochi → Mumbai
+}
+
 
 def get_live_fx_rates() -> dict:
     """Fetch live FX rates from ECB — free, no key needed."""
