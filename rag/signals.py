@@ -649,30 +649,33 @@ def score_route(
     for region in waypoints:
         breakdown[region] = score_region(region, events, oil_trend, anomaly)
 
-    # Apply destination-proximity weighting to pick the riskiest region.
-    # Regions close to the destination are amplified; distant ones are
-    # penalised. This prevents high-volume news regions (e.g. Eastern Europe
-    # during the Ukraine war) from outranking regions that are actually on
-    # the flight path (e.g. Gulf for YYZ→DXB).
-    dest_lat, dest_lng = AIRPORT_COORDS[destination]
-    weighted_breakdown: dict[str, float] = {}
-    for region, raw_score in breakdown.items():
-        center = REGION_CENTERS.get(region)
-        if center:
-            dist = haversine_km(center[0], center[1], dest_lat, dest_lng)
-            if dist < 2000:
-                multiplier = 1.5
-            elif dist < 4000:
-                multiplier = 1.2
-            else:
-                multiplier = 0.8
-        else:
-            multiplier = 1.0
-        weighted_breakdown[region] = round(raw_score * multiplier, 1)
+    # Apply destination-proximity weighting directly to breakdown.
+    # Regions close to the destination are amplified; far ones penalised.
+    # Thresholds chosen so Eastern Europe (~3500km from DXB) gets 1.0×
+    # while Gulf (~490km from DXB) gets 1.8×, preventing Ukraine war
+    # news volume from outranking the actual destination region.
+    if destination in AIRPORT_COORDS:
+        dest_lat, dest_lon = AIRPORT_COORDS[destination]
+    else:
+        dest_lat, dest_lon = None, None
 
-    if weighted_breakdown:
-        riskiest_region = max(weighted_breakdown, key=lambda r: weighted_breakdown[r])
-        top_score = breakdown[riskiest_region]   # report raw score, not inflated
+    for region in list(breakdown):
+        if dest_lat is not None and region in REGION_CENTERS:
+            region_lat, region_lon = REGION_CENTERS[region]
+            dist = haversine_km(dest_lat, dest_lon, region_lat, region_lon)
+            if dist < 1500:
+                multiplier = 1.8
+            elif dist < 3000:
+                multiplier = 1.3
+            elif dist < 5000:
+                multiplier = 1.0
+            else:
+                multiplier = 0.6
+            breakdown[region] = round(breakdown[region] * multiplier, 1)
+
+    if breakdown:
+        riskiest_region = max(breakdown, key=breakdown.get)
+        top_score = breakdown[riskiest_region]
     else:
         riskiest_region = "Unknown"
         top_score = 0.0
@@ -683,7 +686,6 @@ def score_route(
         "riskiest_region": riskiest_region,
         "waypoints": waypoints,
         "breakdown": breakdown,
-        "weighted_breakdown": weighted_breakdown,
         "label": label_from_score(top_score),
     }
     cascades = detect_cascade_risk(result, origin, destination)
