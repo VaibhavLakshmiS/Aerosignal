@@ -232,9 +232,30 @@ with st.sidebar:
         st.metric("News Events", str(_d["event_count"]))
 
 
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+
+if "analysis_count" not in st.session_state:
+    st.session_state.analysis_count = 0
+if "last_analysis_time" not in st.session_state:
+    st.session_state.last_analysis_time = 0
+
 # ── Analysis trigger ──────────────────────────────────────────────────────────
 
 if clicked:
+    time_since_last = time.time() - st.session_state.last_analysis_time
+    if time_since_last < 30:
+        st.warning(
+            f"Please wait {30 - int(time_since_last)} seconds "
+            "before analyzing another route."
+        )
+        st.stop()
+    if st.session_state.analysis_count >= 10:
+        st.error("Session limit reached. Please refresh the page.")
+        st.stop()
+
+    st.session_state.analysis_count += 1
+    st.session_state.last_analysis_time = time.time()
+
     origin      = origin_input.strip().upper()
     destination = destination_input.strip().upper()
 
