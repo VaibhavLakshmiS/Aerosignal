@@ -191,4 +191,4 @@ MIT
 
 ---
 
-Built by [Vaibhav Verma](https://github.com/VaibhavLakshmiS)
+Built by [Vaibhav](https://github.com/VaibhavLakshmiS)
